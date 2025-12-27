@@ -1,0 +1,7 @@
+data/processed/
+data/raw/
+*.csv
+*.jsonl
+*.gz
+__pycache__/
+.venv/
