@@ -566,6 +566,15 @@ with st.sidebar:
             pm = process_match(mf)
             save_processed(pm, PROCESSED_DIR)
 
+            st.write(
+    {
+        "match_id": getattr(mf, "match_id", None),
+        "match_json_bytes": len(getattr(mf, "match_json", b"") or b""),
+        "tracking_bytes": len(getattr(mf, "tracking", b"") or b""),
+        "tracking_attr_present": hasattr(mf, "tracking"),
+    }
+)
+
             st.cache_data.clear()
             st.success(f"Loaded demo match {demo_mid}.")
             st.rerun()
