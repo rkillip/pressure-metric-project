@@ -2,21 +2,40 @@ from __future__ import annotations
 
 import io
 import json
+import pandas as pd
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-import pandas as pd
 
 from .io import MatchFiles
 from .schemas import ProcessedMatch
 from .validate import require_columns, require_nonempty
 
 
-def _read_tracking(match: MatchFiles) -> pd.DataFrame:
-    mid = match.match_id
-    name = f"{mid}_tracking_extrapolated.jsonl"
-    raw = match.get(name)
-    return pd.read_json(io.BytesIO(raw), lines=True)
+def _read_tracking(match) -> pd.DataFrame:
+    raw = match.tracking  # bytes (expected)
+
+    if raw is None or len(raw) == 0:
+        raise ValueError("Tracking payload is empty.")
+
+    # If this is a gzip file (.gz), decompress first
+    if isinstance(raw, (bytes, bytearray)) and len(raw) >= 2 and raw[0] == 0x1F and raw[1] == 0x8B:
+        raw = gzip.decompress(raw)
+
+    # Quick guardrail: if this looks like HTML, it's probably a bad download (404/rate limit)
+    head = raw[:200].decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)[:200]
+    if "<html" in head.lower() or "<!doctype html" in head.lower():
+        raise ValueError(
+            "Tracking download returned HTML instead of JSONL. "
+            "This usually means the GitHub URL is wrong (404) or rate-limited."
+        )
+
+    try:
+        return pd.read_json(io.BytesIO(raw), lines=True)
+    except ValueError as e:
+        preview = head.replace("\n", "\\n")
+        raise ValueError(f"Failed to parse tracking JSONL. First bytes: {preview}") from e
+
 
 
 def _read_events(match: MatchFiles) -> pd.DataFrame:
