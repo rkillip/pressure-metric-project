@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -8,9 +9,12 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pipeline
 import streamlit as st
 from mplsoccer import Pitch
+
+from pipeline.demo import load_curated_demo_list, load_demo_match
+from pipeline.io import load_match_from_zip
+from pipeline.process import process_match, save_processed
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,21 @@ except Exception:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+RAW_CACHE_DIR = PROJECT_ROOT / "data" / "raw"
+
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+RAW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def clear_processed_outputs() -> None:
+    if PROCESSED_DIR.exists():
+        shutil.rmtree(PROCESSED_DIR, ignore_errors=True)
+    ensure_dir(PROCESSED_DIR)
+    st.cache_data.clear()
 
 
 def _safe_int(x) -> Optional[int]:
@@ -519,9 +538,56 @@ def plot_snapshot(
     return fig
 
 
+# ----------------------------
+# NEW: data ingestion sidebar
+# ----------------------------
+with st.sidebar:
+    st.subheader("Data")
+
+    demos = load_curated_demo_list(Path("data/demo_matches.json"))
+    demo_ids = [d["match_id"] for d in demos]
+    demo_labels = {d["match_id"]: d.get("label", d["match_id"]) for d in demos}
+
+    if demo_ids:
+        demo_mid = st.selectbox("Demo match", demo_ids, format_func=lambda m: demo_labels.get(m, m))
+        force = st.checkbox("Force re-download", value=False)
+
+        if st.button("Load demo match", use_container_width=True) and demo_mid:
+            ensure_dir(RAW_CACHE_DIR)
+            ensure_dir(PROCESSED_DIR)
+
+            mf = load_demo_match(demo_mid, raw_cache_dir=RAW_CACHE_DIR, force_download=bool(force))
+            pm = process_match(mf)
+            save_processed(pm, PROCESSED_DIR)
+
+            st.cache_data.clear()
+            st.success(f"Loaded demo match {demo_mid}.")
+    else:
+        st.caption("No demo list found at data/demo_matches.json")
+
+    st.divider()
+
+    up = st.file_uploader("Upload raw match (.zip)", type=["zip"])
+    up_mid = st.text_input("Uploaded match_id", value="", help="Prefix in filenames, e.g. 1886347")
+
+    if st.button("Process uploaded zip", use_container_width=True) and up and up_mid.strip():
+        ensure_dir(PROCESSED_DIR)
+        mf = load_match_from_zip(up_mid.strip(), up.getvalue())
+        pm = process_match(mf)
+        save_processed(pm, PROCESSED_DIR)
+
+        st.cache_data.clear()
+        st.success(f"Processed upload {up_mid.strip()}.")
+
+    with st.expander("Maintenance", expanded=False):
+        if st.button("Clear processed matches", use_container_width=True):
+            clear_processed_outputs()
+            st.success("Cleared processed matches.")
+
+
 matches = list_matches()
 if not matches:
-    st.error("No processed matches found in data/processed/.")
+    st.error("No processed matches found in data/processed/. Load a demo match or upload a zip.")
     st.stop()
 
 with st.sidebar:
@@ -531,6 +597,8 @@ with st.sidebar:
     only_good = st.checkbox("Filter low-quality clips", value=True)
     st.divider()
     show_details = st.checkbox("Show details", value=False)
+
+
 
 players_df, ball_df, events_df, meta = load_match(match_id)
 
