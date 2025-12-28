@@ -563,7 +563,7 @@ with st.sidebar:
     st.subheader("Review")
     match_id = st.selectbox("Match", matches, format_func=match_label)
     W = st.slider("Clip window", 10, 30, 15, 1)
-    only_good = st.checkbox("Filter low-quality clips", value=True)
+    only_good = st.checkbox("Show only quality clips", value=True)
     show_details = st.checkbox("Show details", value=False)
 
 players_df, ball_df, events_df, meta = load_match(match_id)
