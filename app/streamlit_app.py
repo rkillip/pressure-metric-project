@@ -12,9 +12,6 @@ import streamlit as st
 from mplsoccer import Pitch
 
 
-# -----------------------------------------------------------------------------
-# Model config
-# -----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModelConfig:
     fps: float = 10.0
@@ -46,26 +43,22 @@ except Exception:
 
 
 # -----------------------------------------------------------------------------
-# Paths (matches your repo screenshot)
+# Paths (UPDATED)
 #
-# Repo:
-#   app/streamlit_app.py
-#   data/<match_id>/{players.csv.gz, ball.csv.gz, events_poss.csv.gz, meta.json}
+# Your repo stores processed artifacts directly under:
+#   data/<match_id>/players.csv.gz
+#   data/<match_id>/ball.csv.gz
+#   data/<match_id>/events_poss.csv.gz
+#   data/<match_id>/meta.json
+#
+# So we treat PROJECT_ROOT/data as the "processed root".
 # -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
+PROCESSED_DIR = PROJECT_ROOT / "data"
 
-REQUIRED_FILES = {
-    "players": "players.csv.gz",
-    "ball": "ball.csv.gz",
-    "events": "events_poss.csv.gz",
-    "meta": "meta.json",
-}
+_REQUIRED_FILES = ("players.csv.gz", "ball.csv.gz", "events_poss.csv.gz", "meta.json")
 
 
-# -----------------------------------------------------------------------------
-# Small helpers
-# -----------------------------------------------------------------------------
 def _safe_int(x) -> Optional[int]:
     try:
         return int(x)
@@ -155,39 +148,33 @@ def _lane_denial(
     return float(contrib.sum())
 
 
-# -----------------------------------------------------------------------------
-# Data access (local folders in data/<match_id>/)
-# -----------------------------------------------------------------------------
-def _is_match_folder(p: Path) -> bool:
-    """
-    A folder counts as a match if it contains the expected processed artifacts.
-    This matches your GitHub screenshot exactly.
-    """
+def _is_match_dir(p: Path) -> bool:
     if not p.is_dir():
         return False
-    for fname in REQUIRED_FILES.values():
-        if not (p / fname).exists():
+    for f in _REQUIRED_FILES:
+        if not (p / f).exists():
             return False
     return True
 
 
 @st.cache_data(show_spinner=False)
 def list_matches() -> list[str]:
-    if not DATA_DIR.exists():
+    if not PROCESSED_DIR.exists():
         return []
 
-    match_ids: list[str] = []
-    for p in DATA_DIR.iterdir():
-        if _is_match_folder(p):
-            match_ids.append(p.name)
+    # Only treat directories with the expected processed artifacts as matches.
+    out: list[str] = []
+    for p in PROCESSED_DIR.iterdir():
+        if _is_match_dir(p):
+            out.append(p.name)
 
-    return sorted(match_ids)
+    return sorted(out)
 
 
 @st.cache_data(show_spinner=False)
 def load_meta(match_id: str) -> dict:
-    base = DATA_DIR / match_id
-    path = base / REQUIRED_FILES["meta"]
+    base = PROCESSED_DIR / match_id
+    path = base / "meta.json"
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return {}
@@ -195,19 +182,18 @@ def load_meta(match_id: str) -> dict:
 
 @st.cache_data(show_spinner=False)
 def match_label(match_id: str) -> str:
-    meta = load_meta(match_id)
-    hn = meta.get("home_team_name")
-    an = meta.get("away_team_name")
-    return f"{hn} vs {an}" if hn and an else match_id
+    # Keep it simple like your desired UI: show the match id.
+    # (If you want, we can switch to "Home vs Away" later.)
+    return match_id
 
 
 @st.cache_data(show_spinner=False)
 def load_match(match_id: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    base = DATA_DIR / match_id
+    base = PROCESSED_DIR / match_id
 
-    players = pd.read_csv(base / REQUIRED_FILES["players"])
-    ball = pd.read_csv(base / REQUIRED_FILES["ball"])
-    events = pd.read_csv(base / REQUIRED_FILES["events"])
+    players = pd.read_csv(base / "players.csv.gz")
+    ball = pd.read_csv(base / "ball.csv.gz")
+    events = pd.read_csv(base / "events_poss.csv.gz")
     meta = load_meta(match_id)
 
     # players clean
@@ -240,9 +226,6 @@ def load_match(match_id: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
     return players, ball, events, meta
 
 
-# -----------------------------------------------------------------------------
-# Clip building & plots (unchanged from your working version)
-# -----------------------------------------------------------------------------
 def quick_clip_quality(players: pd.DataFrame, ball: pd.DataFrame, frame0: int, W: int) -> dict:
     frames = list(range(frame0 - W, frame0 + W + 1))
     clip_players = players[players["frame"].isin(frames)]
@@ -282,6 +265,7 @@ def build_clip(
     beta_: float,
 ):
     frame0 = int(ev["frame_start"])
+    # NOTE: keep your original semantics: event player = "ball carrier" / actor of event
     pid = int(ev["player_id"])
     tid = int(ev["team_id"])
 
@@ -295,7 +279,7 @@ def build_clip(
 
     snap_by_f = {f: clip_players[clip_players["frame"] == f] for f in frames_sorted}
 
-    # ball lookup
+    # ball lookup (centered coords)
     ball_xy_by_f: dict[int, np.ndarray | None] = {}
     if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" in clip_ball.columns):
         b = clip_ball.dropna(subset=["x", "y"])
@@ -309,6 +293,7 @@ def build_clip(
         for f in frames_sorted:
             ball_xy_by_f[f] = None
 
+    # passer position at release
     passer_xy_release = None
     snap0 = snap_by_f.get(frame0)
     if snap0 is not None:
@@ -563,14 +548,14 @@ def plot_snapshot(
 
 
 # -----------------------------------------------------------------------------
-# Main UI
+# UI (simple, like your screenshot)
 # -----------------------------------------------------------------------------
 matches = list_matches()
 if not matches:
     st.error(
         "No processed matches found.\n\n"
-        f"Expected folders like data/<match_id>/ containing: {', '.join(REQUIRED_FILES.values())}\n"
-        f"DATA_DIR = {DATA_DIR}"
+        "Expected folders like: data/<match_id>/\n"
+        "containing: players.csv.gz, ball.csv.gz, events_poss.csv.gz, meta.json"
     )
     st.stop()
 
@@ -579,14 +564,11 @@ with st.sidebar:
     match_id = st.selectbox("Match", matches, format_func=match_label)
     W = st.slider("Clip window", 10, 30, 15, 1)
     only_good = st.checkbox("Filter low-quality clips", value=True)
-    st.divider()
     show_details = st.checkbox("Show details", value=False)
 
 players_df, ball_df, events_df, meta = load_match(match_id)
 
-home_name = meta.get("home_team_name", "Home")
-away_name = meta.get("away_team_name", "Away")
-
+# Home/Away IDs: prefer meta if present, otherwise infer from events.
 home_id_meta = _safe_int(meta.get("home_team_id", None))
 away_id_meta = _safe_int(meta.get("away_team_id", None))
 event_team_ids = sorted(events_df["team_id"].dropna().astype(int).unique().tolist())
@@ -598,8 +580,10 @@ if (home_id is None or away_id is None) and len(event_team_ids) >= 2:
     away_id = event_team_ids[1] if away_id is None else away_id
 
 with st.sidebar:
-    team_choice = st.radio("Team", [home_name, away_name], horizontal=True)
-team_id_selected = home_id if team_choice == home_name else away_id
+    # Always show "Home / Away" toggle (not team names), per your requested UI.
+    team_choice = st.radio("Team", ["Home", "Away"], horizontal=True)
+
+team_id_selected = home_id if team_choice == "Home" else away_id
 
 cols = ["player_id", "team_id"]
 if "player_name" in events_df.columns:
@@ -643,7 +627,14 @@ with st.sidebar:
         format_func=fmt_player,
     )
 
-sub = events_df[events_df["player_id"].astype(int) == int(player_id)].copy().sort_values("frame_start")
+sub = (
+    events_df[
+        (events_df["player_id"].astype(int) == int(player_id))
+        & (events_df["team_id"].astype(int) == int(team_id_selected))
+    ]
+    .copy()
+    .sort_values("frame_start")
+)
 
 if only_good:
     keep = []
@@ -831,8 +822,8 @@ if show_details:
                 "decision_0_100": float(r.get("pressure_decision_0_100", np.nan)),
                 "paths": {
                     "PROJECT_ROOT": str(PROJECT_ROOT),
-                    "DATA_DIR": str(DATA_DIR),
-                    "match_folder": str(DATA_DIR / match_id),
+                    "PROCESSED_DIR": str(PROCESSED_DIR),
+                    "match_dir": str(PROCESSED_DIR / match_id),
                 },
             }
         )
