@@ -3,132 +3,91 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any
 
 import requests
 
-from .io import MatchFiles, load_match_from_folder
 
-# SkillCorner Open Data repo layout:
-#   data/matches.json
-#   data/matches/<match_id>/{match_id}_match.json, ... tracking_extrapolated.jsonl, dynamic_events.csv, phases_of_play.csv
-# Documented in the repo README. :contentReference[oaicite:1]{index=1}
+SKILLCORNER_REPO = ("SkillCorner", "opendata")
+SKILLCORNER_BRANCH = "master"
 
 
 @dataclass(frozen=True)
-class RepoSpec:
-    owner: str = "SkillCorner"
-    repo: str = "opendata"
-    branch: str = "master"
-
-    def raw_base(self) -> str:
-        # raw file host for GitHub repos
-        return f"https://raw.githubusercontent.com/{self.owner}/{self.repo}/{self.branch}"
+class DemoMatchFiles:
+    match_id: str
+    match_json: bytes
+    tracking_jsonl: bytes
+    dynamic_events_csv: bytes
+    phases_of_play_csv: bytes
 
 
-DEFAULT_REPO = RepoSpec()
+def load_curated_demo_list(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return json.loads(path.read_text())
 
 
-REQUIRED_SUFFIXES = (
-    "match.json",
-    "tracking_extrapolated.jsonl",
-    "dynamic_events.csv",
-    "phases_of_play.csv",  # optional for your current app, but we fetch it for completeness
-)
+def _raw_url(owner: str, repo: str, branch: str, rel_path: str) -> str:
+    # IMPORTANT: raw.githubusercontent.com serves the actual file bytes.
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{rel_path}"
 
 
-def _http_get_bytes(url: str, *, timeout_s: float = 30.0) -> bytes:
-    r = requests.get(url, timeout=timeout_s)
+def _download_bytes(url: str) -> bytes:
+    r = requests.get(url, timeout=60)
     r.raise_for_status()
+
+    head = r.content[:200].decode("utf-8", errors="replace").lower()
+    if "<html" in head or "<!doctype html" in head:
+        raise ValueError(f"Got HTML instead of a file. URL likely wrong: {url}")
+
     return r.content
 
 
-def list_available_match_ids(repo: RepoSpec = DEFAULT_REPO) -> List[str]:
-    """
-    Reads data/matches.json from the SkillCorner Open Data repo and returns match ids as strings.
-    """
-    url = f"{repo.raw_base()}/data/matches.json"
-    raw = _http_get_bytes(url)
-    data = json.loads(raw.decode("utf-8"))
+def load_demo_match(match_id: str, *, raw_cache_dir: Path, force_download: bool = False) -> DemoMatchFiles:
+    raw_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # matches.json is a list of match objects containing an "id"
-    ids: List[str] = []
-    for row in data:
-        mid = row.get("id")
-        if mid is not None:
-            ids.append(str(mid))
-    return sorted(set(ids))
+    # Cache paths
+    p_match = raw_cache_dir / f"{match_id}_match.json"
+    p_track = raw_cache_dir / f"{match_id}_tracking_extrapolated.jsonl"
+    p_de = raw_cache_dir / f"{match_id}_dynamic_events.csv"
+    p_pop = raw_cache_dir / f"{match_id}_phases_of_play.csv"
 
+    have_all = p_match.exists() and p_track.exists() and p_de.exists() and p_pop.exists()
+    if have_all and not force_download:
+        return DemoMatchFiles(
+            match_id=match_id,
+            match_json=p_match.read_bytes(),
+            tracking_jsonl=p_track.read_bytes(),
+            dynamic_events_csv=p_de.read_bytes(),
+            phases_of_play_csv=p_pop.read_bytes(),
+        )
 
-def download_raw_match_files(
-    match_id: str,
-    *,
-    repo: RepoSpec = DEFAULT_REPO,
-    raw_cache_dir: Path = Path("data/raw"),
-    force: bool = False,
-) -> Path:
-    """
-    Downloads the 4 raw files for a match into:
-      data/raw/<match_id>/
+    owner, repo = SKILLCORNER_REPO
+    base = f"data/matches/{match_id}"
 
-    Returns the folder path.
+    urls = {
+        "match": _raw_url(owner, repo, SKILLCORNER_BRANCH, f"{base}/{match_id}_match.json"),
+        "tracking": _raw_url(owner, repo, SKILLCORNER_BRANCH, f"{base}/{match_id}_tracking_extrapolated.jsonl"),
+        "dynamic_events": _raw_url(owner, repo, SKILLCORNER_BRANCH, f"{base}/{match_id}_dynamic_events.csv"),
+        "phases": _raw_url(owner, repo, SKILLCORNER_BRANCH, f"{base}/{match_id}_phases_of_play.csv"),
+    }
 
-    This is designed for Streamlit Community Cloud:
-    - cached on the container filesystem (ephemeral, but fast)
-    - NEVER committed to GitHub (gitignore data/raw/)
-    """
-    match_id = str(match_id)
-    out_dir = raw_cache_dir / match_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    match_json = _download_bytes(urls["match"])
+    tracking_jsonl = _download_bytes(urls["tracking"])
+    dynamic_events_csv = _download_bytes(urls["dynamic_events"])
+    phases_of_play_csv = _download_bytes(urls["phases"])
 
-    # Repo path: data/matches/<match_id>/{match_id}_<suffix>
-    base = f"{repo.raw_base()}/data/matches/{match_id}"
+    # Write cache
+    p_match.write_bytes(match_json)
+    p_track.write_bytes(tracking_jsonl)
+    p_de.write_bytes(dynamic_events_csv)
+    p_pop.write_bytes(phases_of_play_csv)
 
-    for suffix in REQUIRED_SUFFIXES:
-        fname = f"{match_id}_{suffix}"
-        url = f"{base}/{fname}"
-        out_path = out_dir / fname
-
-        if out_path.exists() and not force:
-            continue
-
-        blob = _http_get_bytes(url)
-        out_path.write_bytes(blob)
-
-    return out_dir
-
-
-def load_demo_match(
-    match_id: str,
-    *,
-    repo: RepoSpec = DEFAULT_REPO,
-    raw_cache_dir: Path = Path("data/raw"),
-    force_download: bool = False,
-) -> MatchFiles:
-    """
-    Ensures raw files exist in cache, then loads them into MatchFiles for processing.
-    """
-    folder = download_raw_match_files(
-        match_id,
-        repo=repo,
-        raw_cache_dir=raw_cache_dir,
-        force=force_download,
+    return DemoMatchFiles(
+        match_id=match_id,
+        match_json=match_json,
+        tracking_jsonl=tracking_jsonl,
+        dynamic_events_csv=dynamic_events_csv,
+        phases_of_play_csv=phases_of_play_csv,
     )
-    return load_match_from_folder(str(match_id), folder)
 
-
-def load_curated_demo_list(path: Path = Path("data/demo_matches.json")) -> List[Dict[str, str]]:
-    """
-    Optional: if you want a stable 'top 10 matches' list with labels,
-    keep a tiny json file in the repo.
-    """
-    if not path.exists():
-        return []
-    data = json.loads(path.read_text())
-    out: List[Dict[str, str]] = []
-    for row in data:
-        mid = str(row.get("match_id", "")).strip()
-        label = str(row.get("label", "")).strip()
-        if mid:
-            out.append({"match_id": mid, "label": label or mid})
-    return out
