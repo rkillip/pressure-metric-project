@@ -1,137 +1,85 @@
-# pipeline/demo.py
 from __future__ import annotations
 
+import io
 import json
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-import requests
-
-
-# SkillCorner OpenData repo
-OWNER = "SkillCorner"
-REPO = "opendata"
-BRANCH = "master"
+import pandas as pd
 
 
 @dataclass(frozen=True)
-class MatchFiles:
-    """
-    Raw payloads for one match. `process_match()` expects these exact attribute names:
-      - match_json
-      - tracking
-      - dynamic_events
-      - phases_of_play
-    """
-    match_id: str
-    match_json: bytes
-    tracking: bytes
-    dynamic_events: bytes
-    phases_of_play: bytes
+class MatchInputs:
+    match_json: dict
+    df_tracking: pd.DataFrame
+    df_events: pd.DataFrame
+    df_phases: pd.DataFrame
 
 
-def load_curated_demo_list(path: Path) -> list[dict[str, Any]]:
-    """Read data/demo_matches.json (a list of {match_id, label?})."""
-    if not path.exists():
-        return []
-    return json.loads(path.read_text(encoding="utf-8"))
+def _read_text_from_zip(zf: zipfile.ZipFile, name: str) -> str:
+    with zf.open(name) as f:
+        return f.read().decode("utf-8")
 
 
-def _raw_url(rel_path: str) -> str:
-    # Often works for non-LFS files
-    return f"https://raw.githubusercontent.com/{OWNER}/{REPO}/{BRANCH}/{rel_path}"
+def _read_json_from_zip(zf: zipfile.ZipFile, name: str) -> dict:
+    return json.loads(_read_text_from_zip(zf, name))
 
 
-def _media_url(rel_path: str) -> str:
-    # Works well for large/LFS-tracked files
-    return f"https://media.githubusercontent.com/media/{OWNER}/{REPO}/{BRANCH}/{rel_path}"
+def _read_csv_from_zip(zf: zipfile.ZipFile, name: str) -> pd.DataFrame:
+    with zf.open(name) as f:
+        return pd.read_csv(f)
 
 
-def _download_bytes(rel_path: str, *, timeout: int = 90) -> bytes:
-    """
-    Download file bytes from GitHub. Tries raw.githubusercontent.com first, then
-    media.githubusercontent.com (handles large/LFS cases).
-
-    Raises a ValueError with a useful message if we get HTML or an LFS pointer.
-    """
-    urls = [_raw_url(rel_path), _media_url(rel_path)]
-    last_err: Optional[Exception] = None
-
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=timeout)
-            r.raise_for_status()
-            content = r.content
-
-            head = content[:200].decode("utf-8", errors="replace").lower()
-            if "<html" in head or "<!doctype html" in head:
-                raise ValueError(f"Got HTML instead of file bytes from {url}")
-
-            # Git LFS pointer file (text) instead of the actual binary content
-            if head.startswith("version https://git-lfs.github.com/spec"):
-                raise ValueError(f"Got a Git LFS pointer (not the file content) from {url}")
-
-            return content
-        except Exception as e:
-            last_err = e
-
-    raise ValueError(f"Failed to download {rel_path}: {last_err}")
+def _read_jsonl_tracking_from_zip(zf: zipfile.ZipFile, jsonl_name: str) -> pd.DataFrame:
+    # pandas can read jsonl from a file-like object; handle both .jsonl and .jsonl.gz
+    with zf.open(jsonl_name) as f:
+        if jsonl_name.endswith(".gz"):
+            import gzip
+            with gzip.GzipFile(fileobj=f, mode="rb") as gf:
+                return pd.read_json(gf, lines=True)
+        return pd.read_json(f, lines=True)
 
 
-def load_demo_match(match_id: str, *, raw_cache_dir: Path, force_download: bool = False) -> MatchFiles:
-    """
-    Download (or load from cache) the 4 raw match files SkillCorner provides:
-      - {id}_match.json
-      - {id}_tracking_extrapolated.jsonl
-      - {id}_dynamic_events.csv
-      - {id}_phases_of_play.csv
+def load_match_from_demo_zip(match_id: str, demo_zip_dir: Path) -> MatchInputs:
+    zip_path = demo_zip_dir / f"{match_id}.zip"
+    if not zip_path.exists():
+        raise FileNotFoundError(f"Demo zip not found: {zip_path}")
 
-    Caches them to data/raw/ so Streamlit doesn't re-download every rerun.
-    """
-    raw_cache_dir.mkdir(parents=True, exist_ok=True)
+    match_json_name = f"{match_id}_match.json"
+    events_name = f"{match_id}_dynamic_events.csv"
+    phases_name = f"{match_id}_phases_of_play.csv"
+    tracking_jsonl = f"{match_id}_tracking_extrapolated.jsonl"
+    tracking_jsonl_gz = f"{tracking_jsonl}.gz"
 
-    # cache paths
-    p_match = raw_cache_dir / f"{match_id}_match.json"
-    p_track = raw_cache_dir / f"{match_id}_tracking_extrapolated.jsonl"
-    p_dyn = raw_cache_dir / f"{match_id}_dynamic_events.csv"
-    p_pop = raw_cache_dir / f"{match_id}_phases_of_play.csv"
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = set(zf.namelist())
 
-    if (
-        not force_download
-        and p_match.exists()
-        and p_track.exists()
-        and p_dyn.exists()
-        and p_pop.exists()
-    ):
-        return MatchFiles(
-            match_id=match_id,
-            match_json=p_match.read_bytes(),
-            tracking=p_track.read_bytes(),
-            dynamic_events=p_dyn.read_bytes(),
-            phases_of_play=p_pop.read_bytes(),
-        )
+        missing = [n for n in [match_json_name, events_name, phases_name] if n not in names]
+        if missing:
+            raise ValueError(f"Zip {zip_path.name} missing required files: {missing}")
 
-    base = f"data/matches/{match_id}"
+        tracking_name: Optional[str] = None
+        if tracking_jsonl_gz in names:
+            tracking_name = tracking_jsonl_gz
+        elif tracking_jsonl in names:
+            tracking_name = tracking_jsonl
+        else:
+            raise ValueError(
+                f"Zip {zip_path.name} missing tracking file: "
+                f"{tracking_jsonl} or {tracking_jsonl_gz}"
+            )
 
-    # NOTE: if SkillCorner changes extensions to .jsonl.gz for tracking,
-    # adjust this filename accordingly and keep your gzip-decompress logic
-    # in pipeline/process.py.
-    match_json = _download_bytes(f"{base}/{match_id}_match.json")
-    tracking = _download_bytes(f"{base}/{match_id}_tracking_extrapolated.jsonl")
-    dynamic_events = _download_bytes(f"{base}/{match_id}_dynamic_events.csv")
-    phases_of_play = _download_bytes(f"{base}/{match_id}_phases_of_play.csv")
+        match_json = _read_json_from_zip(zf, match_json_name)
+        df_events = _read_csv_from_zip(zf, events_name)
+        df_phases = _read_csv_from_zip(zf, phases_name)
+        df_tracking = _read_jsonl_tracking_from_zip(zf, tracking_name)
 
-    # write cache
-    p_match.write_bytes(match_json)
-    p_track.write_bytes(tracking)
-    p_dyn.write_bytes(dynamic_events)
-    p_pop.write_bytes(phases_of_play)
-
-    return MatchFiles(
-        match_id=match_id,
+    return MatchInputs(
         match_json=match_json,
-        tracking=tracking,
-        dynamic_events=dynamic_events,
-        phases_of_play=phases_of_play,
+        df_tracking=df_tracking,
+        df_events=df_events,
+        df_phases=df_phases,
     )
+
