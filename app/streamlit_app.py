@@ -272,7 +272,7 @@ def build_clip(
 
     # ball lookup (centered coords)
     ball_xy_by_f: dict[int, np.ndarray | None] = {}
-    if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" not in clip_ball.columns):
+    if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" in clip_ball.columns):
         b = clip_ball.dropna(subset=["x", "y"])
         for f in frames_sorted:
             bf = b[b["frame"] == f]
