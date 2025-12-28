@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import json
 import shutil
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import matplotlib.pyplot as plt
@@ -11,6 +14,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from mplsoccer import Pitch
+
+from pipeline.demo import load_curated_demo_list, load_demo_match
+from pipeline.io import load_match_from_zip
+from pipeline.process import process_match, save_processed
 
 from pipeline.demo import load_curated_demo_list, load_demo_match
 from pipeline.io import load_match_from_zip
