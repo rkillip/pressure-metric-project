@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass
-from pathlib import Path  # Path must be imported before you use it
-from typing import Optional
-
-# -----------------------------------------------------------------------------
-# Repo import plumbing (Streamlit sometimes runs from /app)
-# -----------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 import json
-import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,13 +11,9 @@ import pandas as pd
 import streamlit as st
 from mplsoccer import Pitch
 
-from pipeline.demo import load_curated_demo_list
-from pipeline.io import load_match_from_zip
-from pipeline.process import process_match, save_processed
-
 
 # -----------------------------------------------------------------------------
-# Config
+# Model config
 # -----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ModelConfig:
@@ -56,67 +42,29 @@ st.caption("Pick an event, scrub frames, and inspect the defensive influence sha
 try:
     pd.set_option("mode.dtype_backend", "numpy")
 except Exception:
-    # pandas < 2.0 or backend not available; safe to ignore
     pass
 
 
 # -----------------------------------------------------------------------------
-# Paths
+# Paths (matches your repo screenshot)
+#
+# Repo:
+#   app/streamlit_app.py
+#   data/<match_id>/{players.csv.gz, ball.csv.gz, events_poss.csv.gz, meta.json}
 # -----------------------------------------------------------------------------
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-RAW_CACHE_DIR = PROJECT_ROOT / "data" / "raw"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = PROJECT_ROOT / "data"
 
-# Demo zips are committed under data/{match_id}.zip
-DEMO_ZIP_DIR = PROJECT_ROOT / "data"
-DEMO_LIST_PATH = PROJECT_ROOT / "data" / "demo_matches.json"
-
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-RAW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-
-# -----------------------------------------------------------------------------
-# Small FS helpers
-# -----------------------------------------------------------------------------
-def ensure_dir(p: Path) -> None:
-    p.mkdir(parents=True, exist_ok=True)
-
-
-def clear_processed_outputs() -> None:
-    if PROCESSED_DIR.exists():
-        shutil.rmtree(PROCESSED_DIR, ignore_errors=True)
-    ensure_dir(PROCESSED_DIR)
-    st.cache_data.clear()
-
-
-def processed_exists(match_id: str) -> bool:
-    """
-    A match is considered processed if its folder exists and contains the core outputs.
-    """
-    base = PROCESSED_DIR / match_id
-    return (base / "players.csv.gz").exists() and (base / "events_poss.csv.gz").exists()
-
-
-def demo_zip_path(match_id: str) -> Path:
-    return DEMO_ZIP_DIR / f"{match_id}.zip"
-
-
-def demo_zip_exists(match_id: str) -> bool:
-    return demo_zip_path(match_id).exists()
-
-
-def read_zip_bytes_from_repo(match_id: str) -> bytes:
-    """
-    Read demo zip bytes from the repo. This keeps the pipeline interface consistent:
-    we can reuse pipeline.io.load_match_from_zip(match_id, zip_bytes).
-    """
-    zp = demo_zip_path(match_id)
-    if not zp.exists():
-        raise FileNotFoundError(f"Demo zip not found: {zp}")
-    return zp.read_bytes()
+REQUIRED_FILES = {
+    "players": "players.csv.gz",
+    "ball": "ball.csv.gz",
+    "events": "events_poss.csv.gz",
+    "meta": "meta.json",
+}
 
 
 # -----------------------------------------------------------------------------
-# Numeric / label helpers
+# Small helpers
 # -----------------------------------------------------------------------------
 def _safe_int(x) -> Optional[int]:
     try:
@@ -208,21 +156,40 @@ def _lane_denial(
 
 
 # -----------------------------------------------------------------------------
-# Cached readers for processed artifacts
+# Data access (local folders in data/<match_id>/)
 # -----------------------------------------------------------------------------
+def _is_match_folder(p: Path) -> bool:
+    """
+    A folder counts as a match if it contains the expected processed artifacts.
+    This matches your GitHub screenshot exactly.
+    """
+    if not p.is_dir():
+        return False
+    for fname in REQUIRED_FILES.values():
+        if not (p / fname).exists():
+            return False
+    return True
+
+
 @st.cache_data(show_spinner=False)
 def list_matches() -> list[str]:
-    if not PROCESSED_DIR.exists():
+    if not DATA_DIR.exists():
         return []
-    return sorted([p.name for p in PROCESSED_DIR.iterdir() if p.is_dir()])
+
+    match_ids: list[str] = []
+    for p in DATA_DIR.iterdir():
+        if _is_match_folder(p):
+            match_ids.append(p.name)
+
+    return sorted(match_ids)
 
 
 @st.cache_data(show_spinner=False)
 def load_meta(match_id: str) -> dict:
-    base = PROCESSED_DIR / match_id
-    path = base / "meta.json"
+    base = DATA_DIR / match_id
+    path = base / REQUIRED_FILES["meta"]
     if path.exists():
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     return {}
 
 
@@ -236,11 +203,11 @@ def match_label(match_id: str) -> str:
 
 @st.cache_data(show_spinner=False)
 def load_match(match_id: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
-    base = PROCESSED_DIR / match_id
+    base = DATA_DIR / match_id
 
-    players = pd.read_csv(base / "players.csv.gz")
-    ball = pd.read_csv(base / "ball.csv.gz")
-    events = pd.read_csv(base / "events_poss.csv.gz")
+    players = pd.read_csv(base / REQUIRED_FILES["players"])
+    ball = pd.read_csv(base / REQUIRED_FILES["ball"])
+    events = pd.read_csv(base / REQUIRED_FILES["events"])
     meta = load_meta(match_id)
 
     # players clean
@@ -274,7 +241,7 @@ def load_match(match_id: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame,
 
 
 # -----------------------------------------------------------------------------
-# Clip building & plots (unchanged)
+# Clip building & plots (unchanged from your working version)
 # -----------------------------------------------------------------------------
 def quick_clip_quality(players: pd.DataFrame, ball: pd.DataFrame, frame0: int, W: int) -> dict:
     frames = list(range(frame0 - W, frame0 + W + 1))
@@ -328,7 +295,7 @@ def build_clip(
 
     snap_by_f = {f: clip_players[clip_players["frame"] == f] for f in frames_sorted}
 
-    # ball lookup (centered coords)
+    # ball lookup
     ball_xy_by_f: dict[int, np.ndarray | None] = {}
     if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" in clip_ball.columns):
         b = clip_ball.dropna(subset=["x", "y"])
@@ -342,7 +309,6 @@ def build_clip(
         for f in frames_sorted:
             ball_xy_by_f[f] = None
 
-    # passer position at release
     passer_xy_release = None
     snap0 = snap_by_f.get(frame0)
     if snap0 is not None:
@@ -597,82 +563,15 @@ def plot_snapshot(
 
 
 # -----------------------------------------------------------------------------
-# Sidebar: data loading + maintenance
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.subheader("Data")
-
-    demos = load_curated_demo_list(DEMO_LIST_PATH) if DEMO_LIST_PATH.exists() else []
-    demo_labels = {d["match_id"]: d.get("label", d["match_id"]) for d in demos}
-    configured_demo_ids = [d["match_id"] for d in demos]
-
-    # Only show demos that actually have a committed zip in data/{match_id}.zip
-    demo_ids = [mid for mid in configured_demo_ids if demo_zip_exists(mid)]
-
-    if demo_ids:
-        demo_mid = st.selectbox("Demo match", demo_ids, format_func=lambda m: demo_labels.get(m, m))
-
-        # "Force re-download" no longer makes sense; we reprocess instead.
-        force_reprocess = st.checkbox(
-            "Reprocess even if already processed",
-            value=False,
-            help="If unchecked, we skip processing when outputs already exist in data/processed/<match_id>/",
-        )
-
-        if st.button("Load demo match", use_container_width=True) and demo_mid:
-            ensure_dir(PROCESSED_DIR)
-
-            if processed_exists(demo_mid) and not force_reprocess:
-                st.info(f"Processed outputs already exist for {demo_mid}. Skipping reprocess.")
-            else:
-                zip_bytes = read_zip_bytes_from_repo(demo_mid)
-                mf = load_match_from_zip(demo_mid, zip_bytes)
-                pm = process_match(mf)
-                save_processed(pm, PROCESSED_DIR)
-
-            st.cache_data.clear()
-            st.success(f"Demo match ready: {demo_mid}")
-            st.rerun()
-    else:
-        if configured_demo_ids:
-            st.caption("demo_matches.json exists, but no corresponding data/{match_id}.zip files were found.")
-        else:
-            st.caption(f"No demo list found at {DEMO_LIST_PATH}")
-
-        # Helpful visibility when debugging packaging
-        existing = sorted([p.stem for p in DEMO_ZIP_DIR.glob("*.zip")])
-        if existing:
-            st.caption(f"Found zips under data/: {', '.join(existing[:6])}{'...' if len(existing) > 6 else ''}")
-
-    st.divider()
-
-    up = st.file_uploader("Upload raw match (.zip)", type=["zip"])
-    up_mid = st.text_input("Uploaded match_id", value="", help="Prefix in filenames, e.g. 1886347")
-
-    if st.button("Process uploaded zip", use_container_width=True) and up and up_mid.strip():
-        ensure_dir(PROCESSED_DIR)
-
-        mf = load_match_from_zip(up_mid.strip(), up.getvalue())
-        pm = process_match(mf)
-        save_processed(pm, PROCESSED_DIR)
-
-        st.cache_data.clear()
-        st.success(f"Processed upload {up_mid.strip()}.")
-        st.rerun()
-
-    with st.expander("Maintenance", expanded=False):
-        if st.button("Clear processed matches", use_container_width=True):
-            clear_processed_outputs()
-            st.success("Cleared processed matches.")
-            st.rerun()
-
-
-# -----------------------------------------------------------------------------
-# Main: review UI (unchanged)
+# Main UI
 # -----------------------------------------------------------------------------
 matches = list_matches()
 if not matches:
-    st.error("No processed matches found in data/processed/. Load a demo match or upload a zip.")
+    st.error(
+        "No processed matches found.\n\n"
+        f"Expected folders like data/<match_id>/ containing: {', '.join(REQUIRED_FILES.values())}\n"
+        f"DATA_DIR = {DATA_DIR}"
+    )
     st.stop()
 
 with st.sidebar:
@@ -930,17 +829,10 @@ if show_details:
                 "P_eff": float(r.get("P_eff", np.nan)),
                 "live_0_100": float(r.get("pressure_live_0_100", np.nan)),
                 "decision_0_100": float(r.get("pressure_decision_0_100", np.nan)),
-                "params": {
-                    "r_core": CFG.r_core,
-                    "r_max": CFG.r_max,
-                    "v_gate": CFG.v_gate,
-                    "v0": CFG.v0,
-                    "tau": float(tau_ui),
-                    "alpha": CFG.alpha,
-                    "k": float(k_ui),
-                    "outer_tail": CFG.outer_tail,
-                    "ttc_scale": CFG.ttc_scale,
-                    "beta": CFG.beta,
+                "paths": {
+                    "PROJECT_ROOT": str(PROJECT_ROOT),
+                    "DATA_DIR": str(DATA_DIR),
+                    "match_folder": str(DATA_DIR / match_id),
                 },
             }
         )
