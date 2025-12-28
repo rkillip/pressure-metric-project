@@ -750,13 +750,13 @@ closing = float(r.get("closing_mps", np.nan))
 dpi = live_val
 
 if dpi >= 80:
-    label = "High"
+    label = "Extreme"
     color = "#8B0000"
-elif dpi >= 60:
-    label = "Med"
+elif dpi >= 50:
+    label = "High"
     color = "#B22222"
-elif dpi >= 40:
-    label = "Moderate"
+elif dpi >= 25:
+    label = "Med"
     color = "#AA5500"
 else:
     label = "Low"
