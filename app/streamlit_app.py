@@ -27,7 +27,7 @@ class ModelConfig:
 
     outer_tail: float = 0.35
     ttc_scale: float = 1.0
-    beta: float = 0.55
+    beta: float = 0.65
 
 
 CFG = ModelConfig()
