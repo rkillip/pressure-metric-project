@@ -33,7 +33,7 @@ class ModelConfig:
 CFG = ModelConfig()
 
 st.set_page_config(page_title="Pressure Replay", layout="wide")
-st.title("Pressure Replay — SkillCorner Tracking")
+st.title("On the Ball Pressure")
 st.caption("Pick an event, scrub frames, and inspect the defensive influence shaping decisions.")
 
 try:
