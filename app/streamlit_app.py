@@ -272,7 +272,7 @@ def build_clip(
 
     # ball lookup (centered coords)
     ball_xy_by_f: dict[int, np.ndarray | None] = {}
-    if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" in clip_ball.columns):
+    if not clip_ball.empty and ("x" in clip_ball.columns) and ("y" not in clip_ball.columns):
         b = clip_ball.dropna(subset=["x", "y"])
         for f in frames_sorted:
             bf = b[b["frame"] == f]
@@ -538,13 +538,11 @@ def plot_snapshot(
     return fig
 
 
-# ----------------------------
-# NEW: data ingestion sidebar
-# ----------------------------
 with st.sidebar:
     st.subheader("Data")
 
-    demos = load_curated_demo_list(Path("data/demo_matches.json"))
+    demos_path = PROJECT_ROOT / "data" / "demo_matches.json"
+    demos = load_curated_demo_list(demos_path)
     demo_ids = [d["match_id"] for d in demos]
     demo_labels = {d["match_id"]: d.get("label", d["match_id"]) for d in demos}
 
@@ -562,8 +560,9 @@ with st.sidebar:
 
             st.cache_data.clear()
             st.success(f"Loaded demo match {demo_mid}.")
+            st.rerun()
     else:
-        st.caption("No demo list found at data/demo_matches.json")
+        st.caption(f"No demo list found at {demos_path}")
 
     st.divider()
 
@@ -572,17 +571,20 @@ with st.sidebar:
 
     if st.button("Process uploaded zip", use_container_width=True) and up and up_mid.strip():
         ensure_dir(PROCESSED_DIR)
+
         mf = load_match_from_zip(up_mid.strip(), up.getvalue())
         pm = process_match(mf)
         save_processed(pm, PROCESSED_DIR)
 
         st.cache_data.clear()
         st.success(f"Processed upload {up_mid.strip()}.")
+        st.rerun()
 
     with st.expander("Maintenance", expanded=False):
         if st.button("Clear processed matches", use_container_width=True):
             clear_processed_outputs()
             st.success("Cleared processed matches.")
+            st.rerun()
 
 
 matches = list_matches()
@@ -597,7 +599,6 @@ with st.sidebar:
     only_good = st.checkbox("Filter low-quality clips", value=True)
     st.divider()
     show_details = st.checkbox("Show details", value=False)
-
 
 
 players_df, ball_df, events_df, meta = load_match(match_id)
@@ -862,4 +863,5 @@ if show_details:
             }
         )
         st.json(meta)
+
 
