@@ -32,8 +32,11 @@ class ModelConfig:
 
 CFG = ModelConfig()
 
-st.set_page_config(page_title="Pressure Replay", layout="wide")
-st.title("On the Ball Pressure")
+# -----------------------------------------------------------------------------
+# Page config + header (UPDATED)
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="Football Pressure Metric", layout="wide")
+st.title("Football Pressure Metric")
 st.caption("Pick an event, scrub frames, and inspect the defensive influence shaping decisions.")
 
 try:
@@ -43,15 +46,13 @@ except Exception:
 
 
 # -----------------------------------------------------------------------------
-# Paths (UPDATED)
+# Paths
 #
-# Your repo stores processed artifacts directly under:
+# Repo stores processed artifacts under:
 #   data/<match_id>/players.csv.gz
 #   data/<match_id>/ball.csv.gz
 #   data/<match_id>/events_poss.csv.gz
 #   data/<match_id>/meta.json
-#
-# So we treat PROJECT_ROOT/data as the "processed root".
 # -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROCESSED_DIR = PROJECT_ROOT / "data"
@@ -162,7 +163,6 @@ def list_matches() -> list[str]:
     if not PROCESSED_DIR.exists():
         return []
 
-    # Only treat directories with the expected processed artifacts as matches.
     out: list[str] = []
     for p in PROCESSED_DIR.iterdir():
         if _is_match_dir(p):
@@ -182,8 +182,6 @@ def load_meta(match_id: str) -> dict:
 
 @st.cache_data(show_spinner=False)
 def match_label(match_id: str) -> str:
-    # Keep it simple like your desired UI: show the match id.
-    # (If you want, we can switch to "Home vs Away" later.)
     return match_id
 
 
@@ -265,7 +263,6 @@ def build_clip(
     beta_: float,
 ):
     frame0 = int(ev["frame_start"])
-    # NOTE: keep your original semantics: event player = "ball carrier" / actor of event
     pid = int(ev["player_id"])
     tid = int(ev["team_id"])
 
@@ -532,8 +529,8 @@ def plot_snapshot(
             ax.scatter(bx0, by0, s=70, c="orange", zorder=11)
 
             if show_ball_trail and ball_trail_len > 0:
-                fmin = frame - int(ball_trail_len)
-                trail = b[(b["frame"] >= fmin) & (b["frame"] <= frame)].sort_values("frame")
+                fmin_local = frame - int(ball_trail_len)
+                trail = b[(b["frame"] >= fmin_local) & (b["frame"] <= frame)].sort_values("frame")
                 if not trail.empty:
                     tx = trail["x"].to_numpy(float) + (L / 2.0)
                     ty = trail["y"].to_numpy(float) + (Wp / 2.0)
@@ -542,13 +539,12 @@ def plot_snapshot(
                         ty = Wp - ty
                     ax.plot(tx, ty, linestyle="-", linewidth=2, c="orange", alpha=0.45, zorder=10)
 
-    eid = str(ev.get("event_id", ""))
-    ax.set_title(f"Event {eid} | Frame {frame} | Nearest defender: {nd:.2f} m", fontsize=12)
+    # UPDATED: remove the plot title (info already shown above the pitch)
     return fig
 
 
 # -----------------------------------------------------------------------------
-# UI (simple, like your screenshot)
+# UI
 # -----------------------------------------------------------------------------
 matches = list_matches()
 if not matches:
@@ -562,9 +558,16 @@ if not matches:
 with st.sidebar:
     st.subheader("Review")
     match_id = st.selectbox("Match", matches, format_func=match_label)
-    W = st.slider("Clip window", 10, 30, 15, 1)
-    only_good = st.checkbox("Show only quality clips", value=True)
+
+    # UPDATED label
+    only_good = st.checkbox("Only high quality clips", value=True)
+
     show_details = st.checkbox("Show details", value=False)
+
+    # UPDATED: clip window default to 25, and only show when show_details is enabled.
+    W = 25
+    if show_details:
+        W = st.slider("Clip window (± frames)", 10, 40, 25, 1)
 
 players_df, ball_df, events_df, meta = load_match(match_id)
 
@@ -580,7 +583,6 @@ if (home_id is None or away_id is None) and len(event_team_ids) >= 2:
     away_id = event_team_ids[1] if away_id is None else away_id
 
 with st.sidebar:
-    # Always show "Home / Away" toggle (not team names), per your requested UI.
     team_choice = st.radio("Team", ["Home", "Away"], horizontal=True)
 
 team_id_selected = home_id if team_choice == "Home" else away_id
@@ -722,13 +724,17 @@ if show_details or (not qc.get("is_good", False)):
 
 st.caption("Pressure is scaled 0–100. Higher means more immediate defensive influence on the ball-carrier’s decision.")
 
-frame = st.slider(
-    "Frame",
-    min_value=fmin,
-    max_value=fmax,
-    value=frame0 if fmin <= frame0 <= fmax else fmin,
-    step=1,
-)
+# UPDATED: move frame slider to the sidebar (so pitch + metrics stay visible)
+with st.sidebar:
+    st.subheader("Frame")
+    frame = st.slider(
+        "Frame",
+        min_value=fmin,
+        max_value=fmax,
+        value=frame0 if fmin <= frame0 <= fmax else fmin,
+        step=1,
+        label_visibility="collapsed",
+    )
 
 r = met.loc[frame] if frame in met.index else met.iloc[0]
 pid = int(ev["player_id"])
